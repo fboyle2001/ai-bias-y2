@@ -72,8 +72,8 @@ def construct_w2v_matrix(wvs, words):
 
 # Load the vectors from word2vec trained on Google News (word2vec-google-news-300)
 wvs = KeyedVectors.load("pretrained-word2vec-keyedvectors.kv")
-st = StandardScaler().fit_transform(wvs.vectors)
-wvs.vectors = st
+# st = StandardScaler().fit_transform(wvs.vectors)
+# wvs.vectors = st
 norms = np.linalg.norm(wvs.vectors, axis=1)
 
 if max(norms) - min(norms) > 0.0001:
@@ -116,19 +116,20 @@ positive_matrix = construct_w2v_matrix(wvs, positive_words)
 negative_matrix = construct_w2v_matrix(wvs, negative_words)
 
 # Now get the most significant PCA component of the positive word vector matrix
-pca_positive = PCA()
+ncomps = 30
+pca_positive = PCA(n_components=ncomps)
 pca_positive.fit_transform(positive_matrix)
 ms_pca_comp_pos = pca_positive.components_[0]
 
-plt.bar(range(30), pca_positive.explained_variance_[:30])
+plt.bar(range(ncomps), pca_positive.explained_variance_ratio_[:ncomps])
 plt.show()
 
 # Do the same for the negative word vector matrix
-pca_negative = PCA()
+pca_negative = PCA(n_components=ncomps)
 pca_negative.fit_transform(negative_matrix)
 ms_pca_comp_neg = pca_negative.components_[0]
 
-plt.bar(range(30), pca_negative.explained_variance_[:30])
+plt.bar(range(ncomps), pca_negative.explained_variance_ratio_[:ncomps])
 plt.show()
 
 print(ms_pca_comp_neg.shape, ms_pca_comp_pos.shape)
@@ -140,7 +141,16 @@ dsv =  ms_pca_comp_neg - ms_pca_comp_pos
 # W = ["American", "Mexican", "German", "Italian", "French", "Polish", "admire", "awful", "disgusting", "lovely", "British", "English", "Scottish", "Irish", "Welsh"]
 #
 # for w in W:
-#     print(w, np.dot(dsv, wvs.get_vector(w.lower())))
+#     t = w
+#     if w not in wvs:
+#         t = w.lower()
+#         if w not in wvs:
+#             t = w.upper()
+#             if w not in wvs:
+#                 t = w.title()
+#                 if w not in wvs:
+#                     print(w, "Missing")
+#     print(t, np.dot(dsv, wvs.get_vector(t)))
 
 # Try project on some names
 
