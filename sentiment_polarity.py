@@ -3,6 +3,7 @@ from sklearn.decomposition import PCA
 import numpy as np
 from matplotlib import pyplot as plt
 from datetime import datetime
+from sklearn.preprocessing import StandardScaler
 
 # Dictionary of files that may be used throughout the program
 FILE_PATHS = {
@@ -40,9 +41,9 @@ def load_lexicon(word_vectors, filepath):
                 # I also need to consider the different ways that hyphens can be handled
                 # I try 3 different possibilities here
                 candidates = [
+                    case_candidate.replace("-", ""),
                     case_candidate.replace("-", "_"),
                     case_candidate.replace("-", " "),
-                    case_candidate.replace("-", "")
                 ]
 
                 # I then check if any of the candidates are in the trained word2vec model
@@ -152,6 +153,8 @@ def main():
     # Normalise the vectors
     # CITATION NEEDED this is from a GitHub
     word_vectors.vectors /= np.linalg.norm(word_vectors.vectors, axis=1)[:, np.newaxis]
+    scaled = StandardScaler(with_std=False, with_mean=True).fit_transform(word_vectors.vectors)
+    word_vectors.vectors = scaled
 
     # Load the positive and negative lexicons
     positive_lexicon = load_lexicon(word_vectors, FILE_PATHS["positive_words"])
@@ -163,8 +166,8 @@ def main():
 
     # Find the most significant principal component axis for both matrices
     # May also show the PCA chart depending on the parameters
-    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive", display_chart=False)
-    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative", display_chart=False)
+    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive_post_norm_no_sd_ss", display_chart=False)
+    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative_post_norm_no_sd_ss", display_chart=False)
 
     # The directional sentiment vector is defined to be the signed difference between
     # the principal component axis of the positive and negative sentiment matrices
@@ -174,5 +177,6 @@ def main():
 
     test_results = test_dsv_classification(positive_lexicon, negative_lexicon, word_vectors, dsv)
     print(test_results)
+    print(np.dot(dsv, word_vectors.get_vector("american")))
 
 main()
