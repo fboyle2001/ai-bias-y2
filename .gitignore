@@ -2,3 +2,5 @@
 *.kv
 *.npy
 *.png
+*.pdf
+*.csv
