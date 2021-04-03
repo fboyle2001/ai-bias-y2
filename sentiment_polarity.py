@@ -237,6 +237,7 @@ class StochasticAdversialGradientDescent:
 
         for it in range(iters):
             lr = np.exp(-5 / iters * it)
+            #lr = 0.2 * np.exp(-3 / iters * it)
             #print("It", it)
             u_weights_grad, u_weights = self.update_weights(weights, training_data, lr)
             u_adv_weights_grad, u_adv_weights = self.update_weights(adv_weights, training_data, lr)
@@ -333,21 +334,18 @@ def main(charts=False, validations=False):
     words = [x.lower() for x in ["male", "female", "he", "she"]]
     # replace with construct_w2v_matrix
 
-    # rows = []
-    #
-    # for v in word_vectors.vectors[:20000]:
-    #     rows.append(v)
-    #
-    # td = np.array(rows)
+    rows = []
+    td = np.random.default_rng().choice(word_vectors.vectors, size=(1000,))
+    print(td.shape)
 
-    td = construct_w2v_matrix(word_vectors, words)
-    debias_model.fit(td)
+    #td = construct_w2v_matrix(word_vectors, words)
+    debias_model.fit(td, iters=1000)
 
     print("W", debias_model.weights)
     print("AW", debias_model.adv_weights)
 
     print("Now try some words...")
-    reg_american = word_vectors.get_vector("female")
+    reg_american = word_vectors.get_vector("male")
     near_reg_am = word_vectors.most_similar(positive=[reg_american], topn=10)
     deb_american = debias_model.debias_vector(reg_american)
     near_deb_am = word_vectors.most_similar(positive=[deb_american], topn=10)
