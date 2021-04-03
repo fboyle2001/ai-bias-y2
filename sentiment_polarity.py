@@ -9,6 +9,7 @@ import time
 # Dictionary of files that may be used throughout the program
 FILE_PATHS = {
     "pretrained-w2v-google-news": "pretrained-word2vec-keyedvectors.kv",
+    "pretrained-glove": "pretrained-glove-keyedvectors.kv",
     "positive_words": "./opinion-lexicon-English/positive-words.txt",
     "negative_words": "./opinion-lexicon-English/negative-words.txt"
 }
@@ -148,6 +149,12 @@ def test_dsv_classification(positive_lexicon, negative_lexicon, word_vectors, ds
 
     return { "accuracy": accuracy, "precision": precision }
 
+"""
+Tests some national identities to measure their bias sentiment
+
+word_vectors - The word2vec pre-trained model
+dsv - Directional Sentiment Vector
+"""
 def test_basic_nationality_classification(word_vectors, dsv):
     identities = ["American", "Mexican", "German", "Italian", "French", "Polish"]
     identity_scores = dict()
@@ -157,135 +164,250 @@ def test_basic_nationality_classification(word_vectors, dsv):
 
     return identity_scores
 
-class StochasticAdversialGradientDescent:
-    def __init__(self, dsv, alpha, lr):
+"""
+This class contains everything required to perform Gradient Descent to debias the
+word embeddings
+"""
+class AdversarialDebiaser:
+    """
+    Create a new instance of this class
+
+    dsv - The directional sentiment vector
+    alpha - A parameter used to determine the tradeoff between objectives
+    seed - Set the random generator seed (useful for debugging with results that can be replicated)
+    """
+    def __init__(self, dsv, alpha=0.5, seed=None):
         self.dsv = dsv
         self.alpha = alpha
-        self.lr = lr
+        self.seed = seed
         self.weights = None
-        self.adv_weights = None
-        self.weights_grad = None
-        self.adv_weights_grad = None
+        self.weight_scalar = None
 
-    # ys are the sentiment polarity so we want them to go to 0
-    def update_gradient(self, W, instances):
-        m, f = instances.shape
+    """
+    Iteratively calculates the partial derivatives for the gradient of a vector field
+    """
+    def _update_gradient(self, weights, instances):
+        # m is the standard variable for the number of instances
+        m, feature_count = instances.shape
 
-        # print(instances.shape)
-
+        # Stores the partial derivatives as they are calculated
         partials = []
 
-        for j in range(f):
+        # Apply the partial derivative update formula where J is a cost function
+        # ∂J/∂θ_j = 1/m * sum((θ^T . x^(i) - y^(i)) * x^(i)_j)
+        # over each instance x^(i) in the training set and for each feature j
+        # y^(i) is a label, in this case we want to get to the debiased sentiment
+        # i.e. y^(i) = 0 for all i
+        for j in range(feature_count):
             partial = 0
-
             for i in range(m):
-                partial += np.dot(W, instances[i]) * instances[i][j]
+                partial += np.dot(weights, instances[i]) * instances[i][j]
 
             partials.append(partial)
 
         partials = np.array(partials, dtype=np.float64)
         partials /= m
+
         return partials
 
-    def update_weights(self, W, instances, lr):
-        # different alpha to the adversary weight
+    """
+    Updates the weights iteratively using their gradient
+    This is the key part of the gradient descent
+    """
+    def _update_weights(self, weights, instances, learning_rate):
+        # We have to update weights simultaneously so we need a separate array
         new_weights = []
-        m, f = instances.shape
-        # print("m", m)
-        grad = self.update_gradient(W, instances)
+        # m is the standard variable for the number of instances
+        m, feature_count = instances.shape
+        grad = self._update_gradient(weights, instances)
 
-        for j in range(f):
-            new_weights.append(W[j] - lr * grad[j])
+        for j in range(feature_count):
+            # Use the parameter update formula
+            # θ_j = θ_j - α * ∂J/∂θ_j
+            new_weights.append(weights[j] - learning_rate * grad[j])
 
         return grad, np.array(new_weights)
 
-    def fit(self, training_data, iters=1000):
-        stime = time.time()
+    """
+    The loss function for the adversarial objective (retain meaning)
+    """
+    def _adversary_loss(self, weights, y, y_hat):
+        # These are just scalars
+        # Formulas come from the research paper
+        z = np.dot(self.dsv, y)
+        z_hat = np.dot(weights, y_hat)
+        return (z - z_hat) ** 2
 
-        def L_a(adversary_weights, y, y_hat):
-            z = np.dot(self.dsv, y)
-            z_hat = np.dot(adversary_weights, y_hat)
+    """
+    The loss function for the standard objective (debiaser)
+    """
+    def _standard_loss(self, weights, y):
+        # Dot product is equivalent to ww^T = w.w
+        w_norm_sq = np.dot(weights, weights)
+        scaled_y = w_norm_sq * y
+        sq_norm = np.dot(scaled_y, scaled_y)
+        return sq_norm
 
-            return (z - z_hat) ** 2
+    """
+    This function uses Gradient Descent to fit the training data in order to determine
+    the weights to debias a vector
+    """
+    def train(self, training_instances, iterations=100, verbose=True, batch_size=1000):
+        # m is the standard variable for the number of instances
+        m, feature_count = training_instances.shape
+        # Initialise random weights
+        # All of the vectors have been normalised so normalise the weights too
+        weights = np.random.default_rng(seed=self.seed).uniform(low=-1, high=1, size=(feature_count,))
+        weights = weights / np.sqrt(np.dot(weights, weights))
 
-        def L_p(weights, y):
-            w_dp = np.dot(weights, weights)
-            scaled_y = w_dp * y
-            norm = np.dot(scaled_y, scaled_y)
-            return norm
+        # We also need random adversarial weights
+        adv_weights = np.random.default_rng(seed=self.seed).uniform(low=-1, high=1, size=(feature_count,))
+        adv_weights = weights / np.sqrt(np.dot(weights, weights))
 
-        # We don't have labels as such but rather we want to debias the input
-        print(training_data.shape)
-        samples, features = training_data.shape
-        # A vector
-        weights = np.random.default_rng().uniform(low=-1, high=1, size=(features,))
-        weights = weights / np.linalg.norm(weights)
-        adv_weights = np.random.default_rng().uniform(low=-1, high=1, size=(features,))
-        adv_weights = adv_weights / np.linalg.norm(adv_weights)
-        alpha = self.alpha
-
-        weights_grad = None
-        adv_weights_grad = None
-
+        # We will need to keep track of the minimised objective so we can get the best weights
         min_obj = None
-        min_obj_vector = None
-        min_wg, min_w, min_awg, min_aw = 0, 0, 0, 0
+        min_weights = None
 
-        # self.update_gradient(weights, training_data)
+        for iteration in range(iterations):
+            # The learning_rate decreases later in as we fine tune the model
+            # This formula was found by experimentation and plotting graphs on Desmos
+            # I wanted the learning_rate to be high at the start and then rapidly decrease
+            learning_rate = np.exp(-5 / iterations * iteration)
 
-        print(samples, features, weights.shape)
+            # Debugging information
+            if verbose:
+                print("Iteration:", iteration)
+                print("Learning Rate:", learning_rate)
 
-        for it in range(iters):
-            lr = np.exp(-5 / iters * it)
-            #lr = 0.2 * np.exp(-3 / iters * it)
-            #print("It", it)
-            u_weights_grad, u_weights = self.update_weights(weights, training_data, lr)
-            u_adv_weights_grad, u_adv_weights = self.update_weights(adv_weights, training_data, lr)
+            batch_instances = np.random.default_rng().choice(training_instances, size=(1000,))
+
+            # First get the updated weights and their gradients
+            u_weights_grad, u_weights = self._update_weights(weights, batch_instances, learning_rate)
+            u_adv_weights_grad, u_adv_weights = self._update_weights(adv_weights, batch_instances, learning_rate)
+
+            # This is the objective that we want to minimise, it will be iteratively set
             u_obj_vector = np.zeros(weights.shape)
+            # might need to seed
 
-            for y in training_data:
-                Lp = L_p(u_weights, y)
+            # Then we need to calculate the value of the objective function
+            # Please refer to the report for the exact formula because it is quite complicated to
+            # fit in a comment!
+            # Variables names are chosen to reflect what they represent in the original paper
+            for y in batch_instances:
+                # The first term is a weighted gradient of the standard weights
+                Lp = self._standard_loss(u_weights, y)
                 first_term = Lp * u_weights_grad
 
+                # The second term is a weighted gradient of standard weights but with
+                # the adversarial term having an impact on it to tune the model wrt to both objectives
                 y_hat = y - np.dot(u_weights, u_weights) * y
-                La = L_a(u_adv_weights, y, y_hat)
-                st_scalar_project = np.dot(u_weights_grad * Lp, u_adv_weights_grad * La) / np.sqrt(np.dot(u_adv_weights_grad * La, u_adv_weights_grad * La))
-                second_term = st_scalar_project * Lp * u_weights_grad
+                La = self._adversary_loss(u_adv_weights, y, y_hat)
+                scalar_projection = np.dot(u_weights_grad * Lp, u_adv_weights_grad * La)
+                # Normalise against the vector we are projecting on to
+                scalar_projection /= np.sqrt(np.dot(u_adv_weights_grad * La, u_adv_weights_grad * La))
+                second_term = scalar_projection * Lp * u_weights_grad
 
-                third_term = alpha * La * u_adv_weights_grad
-
+                # The final term is used to force the two opposing objectives to 'hurt' each other
+                # And thus create a better result (otherwise the adversarial objective will help the
+                # the original objective rather than contend with it)
+                third_term = self.alpha * La * u_adv_weights_grad
                 u_obj_vector += first_term + second_term - third_term
 
+            # The dot product = || u_obj_vector ||^2 so it is useful for comparing
+            # This constitutes the score used to determine if it is the minimum
             u_obj = np.dot(u_obj_vector, u_obj_vector)
 
+            # Debugging information
+            if verbose:
+                print("Objective Score:", u_obj)
+
+            # If it is better than save it for later
+            # We only want the score and the weights themselves
+            # The adversarial weight is only used during the training process
             if min_obj is None or u_obj < min_obj:
-                print(it, "new_best", u_obj)
                 min_obj = u_obj
-                min_obj_vector = u_obj_vector
-                min_wg, min_w, min_awg, min_aw = u_weights_grad, u_weights, u_adv_weights_grad, u_adv_weights
-            # else:
-            #     if np.abs(u_obj - min_obj) > 0.2 * min_obj:
-            #         print("resetting")
-            #         weights_grad, weights, adv_weights_grad, adv_weights = min_wg, min_w, min_awg, min_aw
-            #         continue
+                min_weights = u_weights
 
-            weights_grad, weights, adv_weights_grad, adv_weights = u_weights_grad, u_weights, u_adv_weights_grad, u_adv_weights
+                # Debugging information
+                if verbose:
+                    print("Beat previous score, new best is now", min_obj)
 
-        self.weights = min_w
-        self.weights_grad = min_wg
-        self.adv_weights = min_aw
-        self.adv_weights_grad = min_awg
+            # Set the weights ready for use in the next iteration
+            weights, adv_weights = u_weights, u_adv_weights
 
-        etime = time.time()
-        print("Finished, took", etime - stime, "seconds")
+        # Save the best weights we have found
+        self.weights = min_weights
+        self.weight_scalar = np.dot(self.weights, self.weights)
 
+    """
+    After training we can then debias a vector
+    y - The vector to debias
+    """
     def debias_vector(self, y):
-        scalar = np.dot(self.weights, self.weights)
-        print("scale", scalar)
-        y_hat = y - scalar * y
-        return y_hat
+        if self.weights is None:
+            print("Warning: The model has not been trained yet!")
+            return y
 
-def main(charts=False, validations=False):
+        # This is the formula that calculates the debiased vector
+        # as set out in the original paper
+        y_hat = y - self.weight_scalar * y
+        return y_hat / np.sqrt((np.dot(y_hat, y_hat)))
+
+"""
+Simply calculates the sentiment scalar projection of a word embedding vector
+
+dsv - The directional sentiment vector
+vector - The word vector to calculate the scalar projection of
+"""
+def calculate_sentiment(dsv, vector):
+    return np.dot(dsv, vector)
+
+"""
+Gets the {topn} nearest neighbours as determine by the word2vec model
+
+word_vectors - The word2vec pre-trained model
+vector - The vector of the word to find the neighbours of
+topn - The number of neighbours to find
+"""
+def get_nearest_neighbours(word_vectors, vector, topn=10):
+    return word_vectors.most_similar(positive=[vector], topn=topn)
+
+"""
+Visual validation of the success of the debiasing effort
+Tests it on male and female by default but it can be changed via arguments
+
+word_vectors - The word2vec pre-trained model
+debiaser - An AdversarialDebiaser instance (that is trained)
+dsv - The directional sentiment vector
+words - The words to debias the sentiment of
+"""
+def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female"], topn=10):
+    for word in words:
+        vector = word_vectors.get_vector(word)
+        print(f"Analysis of {word}")
+        pre_debias_sentiment = calculate_sentiment(dsv, vector)
+        print("Pre-debiasing sentiment:", pre_debias_sentiment)
+        print(f"{topn} nearest neighbours (pre-debiasing)")
+
+        for entry in get_nearest_neighbours(word_vectors, vector, topn=topn):
+            print(entry)
+
+        print()
+
+        debiased_vector = debiaser.debias_vector(vector)
+        debias_sentiment = calculate_sentiment(dsv, debiased_vector)
+        print("Post-debiasing sentiment:", debias_sentiment)
+        relative_sentiment_change = np.abs(pre_debias_sentiment - debias_sentiment) / np.abs(pre_debias_sentiment)
+        print(f"Relative debiasing change: {relative_sentiment_change * 100}")
+        print(f"{topn} nearest neighbours (post-debiasing)")
+
+        for entry in get_nearest_neighbours(word_vectors, debiased_vector, topn=topn):
+            print(entry)
+
+        print("-------------")
+        print()
+
+def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5):
     # Load the pre-trained word2vec vectors
     word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
     # Normalise the vectors
@@ -330,40 +452,28 @@ def main(charts=False, validations=False):
         print(nationality_scores)
         print()
 
-    debias_model = StochasticAdversialGradientDescent(dsv, alpha=0.5, lr=0.01)
-    words = [x.lower() for x in ["male", "female", "he", "she"]]
-    # replace with construct_w2v_matrix
+    # The original paper stipulates that we train the debiaser on
+    debiaser_training_data = np.random.default_rng(seed=seed).choice(word_vectors.vectors, size=(1000,))
+    debiasing_model = AdversarialDebiaser(dsv, alpha=alpha, seed=seed)
 
-    rows = []
-    td = np.random.default_rng().choice(word_vectors.vectors, size=(1000,))
-    print(td.shape)
+    if verbose:
+        print(f"Starting training of debiaser model with alpha={alpha}, iterations={iterations}, seed={seed}")
+        print("Measuring time taken, this could take a while...")
 
-    #td = construct_w2v_matrix(word_vectors, words)
-    debias_model.fit(td, iters=1000)
+    start_training_time = time.time()
+    debiasing_model.train(word_vectors.vectors, iterations=iterations, verbose=verbose)
+    end_training_time = time.time()
 
-    print("W", debias_model.weights)
-    print("AW", debias_model.adv_weights)
+    if verbose:
+        print("Debiaser trained")
+        print(f"Debiaser training took {end_training_time - start_training_time} seconds")
 
-    print("Now try some words...")
-    reg_american = word_vectors.get_vector("male")
-    near_reg_am = word_vectors.most_similar(positive=[reg_american], topn=10)
-    deb_american = debias_model.debias_vector(reg_american)
-    near_deb_am = word_vectors.most_similar(positive=[deb_american], topn=10)
+    if validations:
+        print("Validating the Debiaser")
+        print()
+        validate_debiasing(word_vectors, debiasing_model, dsv)
 
-    male_before = np.dot(dsv, reg_american)
-    male_after = np.dot(dsv, deb_american)
-    print("Male bias before", male_before)
-    print("Male bias after", male_after)
+    filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
+    np.savetxt(filename, debiasing_model.weights)
 
-    print("Top 10 Near Reg Male")
-    for x in near_reg_am:
-        print(x)
-
-    print()
-    print("Top 10 Near Deb Male")
-    for x in near_deb_am:
-        print(x)
-
-
-
-main(charts=False, validations=False)
+main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5)
