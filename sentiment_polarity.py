@@ -224,9 +224,9 @@ class AdversarialDebiaser:
         rng = np.random.default_rng(seed=self.seed)
 
         W = rng.uniform(low=-1, high=1, size=(feature_count,))
-        W /= np.sqrt(np.dot(W, W))
+        # W /= np.sqrt(np.dot(W, W))
         U = rng.uniform(low=-1, high=1, size=(feature_count,))
-        U /= np.sqrt(np.dot(U, U))
+        # U /= np.sqrt(np.dot(U, U))
 
         W_opt = AdamOptimiser(300, W)
         U_opt = AdamOptimiser(300, U)
@@ -240,6 +240,7 @@ class AdversarialDebiaser:
 
             sum_grad_W = 0
             sum_grad_U = 0
+            sum_obj = 0
 
             for ins_id, y in enumerate(batch):
                 # Do this because numpy vectors are difficult
@@ -252,18 +253,30 @@ class AdversarialDebiaser:
 
                 U_dot_y_hat = y_hat.T @ U[:, np.newaxis]
                 k_dot_y = np.dot(self.dsv, y)
-                new_grad_La_U = 2 * (U_dot_y_hat - k_dot_y) * y_hat
+                La_pre_factor = 2 * (U_dot_y_hat - k_dot_y)
+
+                new_grad_La_W = La_pre_factor * (W * (m + 1) + m - 1)
+
+                normed_La_W = new_grad_La_W / np.linalg.norm(new_grad_La_W)
+                scalar_proj = np.dot(new_grad_Lp_W, normed_La_W)
+                proj = scalar_proj * normed_La_W
+
+                new_grad_La_U = La_pre_factor * y_hat
 
                 sum_grad_W += new_grad_Lp_W
                 sum_grad_U += new_grad_La_U
+                sum_obj += new_grad_Lp_W + proj - alpha * new_grad_La_W
 
             avg_grad_W = sum_grad_W / batch_size
             avg_grad_U = sum_grad_U / batch_size
+            avg_obj = sum_obj / batch_size
 
-            W = W_opt.step(avg_grad_W)
-            W /= np.sqrt(np.dot(W, W))
+            print(f"Obj {np.dot(avg_obj, avg_obj)}")
+
+            W = W_opt.step(avg_obj)
+            #W /= np.sqrt(np.dot(W, W))
             U = U_opt.step(avg_grad_U)
-            U /= np.sqrt(np.dot(U, U))
+            #U /= np.sqrt(np.dot(U, U))
 
             # print("Weights")
             # print(W)
