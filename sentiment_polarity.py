@@ -218,6 +218,7 @@ class AdversarialDebiaser:
         self.weights = None
         self.weight_scalar = None
         self.scaler = scaler
+        self.lowest = None
 
     def train(self, training_instances, alpha=0.5, iterations=50, batch_size=1000, verbose=True):
         m, feature_count = training_instances.shape
@@ -230,6 +231,9 @@ class AdversarialDebiaser:
 
         W_opt = AdamOptimiser(300, W)
         U_opt = AdamOptimiser(300, U)
+
+        lowest_W = None
+        min_obj = None
 
         for epoch in range(iterations):
             print("Epoch", epoch)
@@ -265,13 +269,20 @@ class AdversarialDebiaser:
 
                 sum_grad_W += new_grad_Lp_W
                 sum_grad_U += new_grad_La_U
-                sum_obj += new_grad_Lp_W + proj - alpha * new_grad_La_W
+                sum_obj += new_grad_Lp_W - proj - alpha * new_grad_La_W
 
             avg_grad_W = sum_grad_W / batch_size
             avg_grad_U = sum_grad_U / batch_size
             avg_obj = sum_obj / batch_size
 
-            print(f"Obj {np.dot(avg_obj, avg_obj)}")
+            obj_score = np.dot(avg_obj, avg_obj)
+
+            if min_obj is None or obj_score < min_obj:
+                lowest_W = W
+                min_obj = obj_score
+                print(f"Min Obj {min_obj}")
+
+            # print(f"Obj {obj_score}")
 
             W = W_opt.step(avg_obj)
             #W /= np.sqrt(np.dot(W, W))
@@ -286,22 +297,30 @@ class AdversarialDebiaser:
 
             #time.sleep(5)
 
-            W_norm = np.sqrt(np.dot(W, W))
-            dsv_dot = np.dot(self.dsv, W)
-            print(f"W_norm: {W_norm}")
-            print(f"Dir: {dsv_dot}")
+            # W_norm = np.sqrt(np.dot(W, W))
+            # dsv_dot = np.dot(self.dsv, W)
+            # print(f"W_norm: {W_norm}")
+            # print(f"Dir: {dsv_dot}")
+
+        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_BEST_weights_a{alpha}_i{iterations}_s{self.seed}.txt"
+        np.savetxt(filename, lowest_W)
 
         self.weights = W
         self.weight_scalar = np.dot(W, W)
+        self.lowest = lowest_W
 
     """
     After training we can then debias a vector
     y - The vector to debias
     """
-    def debias_vector(self, y):
+    def debias_vector(self, y, lowest=False):
         if self.weights is None:
             print("Warning: The model has not been trained yet!")
             return y
+
+        if lowest:
+            y_hat = y - self.lowest * self.lowest.T * y
+            return y_hat
 
         # This is the formula that calculates the debiased vector
         # as set out in the original paper
@@ -336,7 +355,7 @@ debiaser - An AdversarialDebiaser instance (that is trained)
 dsv - The directional sentiment vector
 words - The words to debias the sentiment of
 """
-def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female"], topn=10):
+def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female", "frank", "american", "josh", "german", "harry", "tia", "jasmine", "betsy"], topn=10):
     for word in words:
         vector = word_vectors.get_vector(word)
         print(f"Analysis of {word}")
@@ -349,7 +368,7 @@ def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female"], to
 
         print()
 
-        debiased_vector = debiaser.debias_vector(vector)
+        debiased_vector = debiaser.debias_vector(vector, lowest=True)
         debias_sentiment = calculate_sentiment(dsv, debiased_vector)
         print("Post-debiasing sentiment:", debias_sentiment)
         relative_sentiment_change = np.abs(pre_debias_sentiment - debias_sentiment) / np.abs(pre_debias_sentiment)
@@ -427,7 +446,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print("Measuring time taken, this could take a while...")
 
     start_training_time = time.time()
-    debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=1000, verbose=verbose)
+    debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=40000, verbose=verbose)
     end_training_time = time.time()
 
     if verbose:
