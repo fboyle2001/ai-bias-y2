@@ -164,39 +164,42 @@ def test_basic_nationality_classification(word_vectors, dsv):
 
     return identity_scores
 
-#https://towardsdatascience.com/how-to-implement-an-adam-optimizer-from-scratch-76e7b217f1cc
-class AdamOptim():
-    def __init__(self, eta=0.01, beta1=0.9, beta2=0.999, epsilon=1e-8):
-        self.m_dw, self.v_dw = 0, 0
-        self.m_db, self.v_db = 0, 0
-        self.beta1 = beta1
-        self.beta2 = beta2
+class AdamOptimiser:
+    def __init__(self, size, gradient, theta_nought, alpha=0.001, beta_1=0.9, beta_2=0.999, epsilon=10**(-8)):
+        self.alpha = alpha
+        self.beta_1 = beta_1
+        self.beta_2 = beta_2
         self.epsilon = epsilon
-        self.eta = eta
-    def update(self, t, w, b, dw, db):
-        ## dw, db are from current minibatch
-        ## momentum beta 1
-        # *** weights *** #
-        self.m_dw = self.beta1*self.m_dw + (1-self.beta1)*dw
-        # *** biases *** #
-        self.m_db = self.beta1*self.m_db + (1-self.beta1)*db
 
-        ## rms beta 2
-        # *** weights *** #
-        self.v_dw = self.beta2*self.v_dw + (1-self.beta2)*(dw**2)
-        # *** biases *** #
-        self.v_db = self.beta2*self.v_db + (1-self.beta2)*(db)
+        self.gradient = gradient
+        self.theta_t = theta_nought
 
-        ## bias correction
-        m_dw_corr = self.m_dw/(1-self.beta1**t)
-        m_db_corr = self.m_db/(1-self.beta1**t)
-        v_dw_corr = self.v_dw/(1-self.beta2**t)
-        v_db_corr = self.v_db/(1-self.beta2**t)
+        self.t = 0
+        self.m_t = np.zeros(shape=(size,))
+        self.v_t = np.zeros(shape=(size,))
 
-        ## update weights and biases
-        w = w - self.eta*(m_dw_corr/(np.sqrt(v_dw_corr)+self.epsilon))
-        b = b - self.eta*(m_db_corr/(np.sqrt(v_db_corr)+self.epsilon))
-        return w, b
+    def step(self):
+        self.t += 1
+
+        # These are the things at time t - 1
+        last_m = self.m_t
+        last_v = self.v_t
+        last_theta = self.theta_t
+        last_grad = self.gradient(last_theta)
+
+        # Then we process for time t
+        m_t = self.beta_1 * last_m + (1 - self.beta_1) * last_grad
+        v_t = self.beta_2 * last_v + (1 - self.beta_2) * np.square(last_grad)
+
+        bias_cor_m_t = m_t / (1 - self.beta_1 ** self.t)
+        bias_cor_v_t = v_t / (1 - self.beta_2 ** self.t)
+        updated_theta = last_theta - self.alpha * bias_cor_m_t / (bias_cor_v_t + self.epsilon)
+
+        self.theta_t = updated_theta
+        self.m_t = m_t
+        self.v_t = v_t
+
+        return self.theta_t
 
 """
 This class contains everything required to perform Gradient Descent to debias the
@@ -271,12 +274,12 @@ class AdversarialDebiaser:
         # print(W.shape)
         # W = self.scaler.transform(np.array([W]))[0]
         # print(W.shape)
-        #W = W / np.sqrt(np.dot(W, W))
+        # W = W / np.sqrt(np.dot(W, W))
         U = rng.uniform(low=-1, high=1, size=(feature_count,))
         # print(U.shape)
         # U = self.scaler.transform(np.array([U]))[0]
         # print(U.shape)
-        #U = U / np.sqrt(np.dot(U, U))
+        # U = U / np.sqrt(np.dot(U, U))
 
         for epoch in range(iterations):
             print("Epoch", epoch)
@@ -289,7 +292,7 @@ class AdversarialDebiaser:
                 grad_Lp = self._calculate_grad_Lp_wrt_W(W)
                 grad_La = self._calculate_grad_La_wrt_W(W, U, instance)
                 projected_grads = self._calculate_proj_gLp_on_gLa(W)
-                objective = grad_Lp - projected_grads + alpha * grad_La #maybe swap back to - ?
+                objective = grad_Lp - projected_grads - alpha * grad_La #maybe swap back to - ?
                 # alt_objective = grad_Lp + projected_grads - alpha * grad_La
 
                 grad_La_wrt_U = self._calculate_grad_La_wrt_U(W, U, instance)
@@ -447,6 +450,18 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print(nationality_scores)
         print()
 
+    print(f"10 nearest neighbours (male)")
+
+    for entry in get_nearest_neighbours(word_vectors, word_vectors.get_vector("male"), topn=10):
+        print(entry)
+
+    print(f"10 nearest neighbours (female)")
+
+    for entry in get_nearest_neighbours(word_vectors, word_vectors.get_vector("female"), topn=10):
+        print(entry)
+
+    return
+
     # The original paper stipulates that we train the debiaser on
     debiaser_training_data = np.random.default_rng(seed=seed).choice(word_vectors.vectors, size=(1000,))
     debiasing_model = AdversarialDebiaser(dsv, seed=seed, scaler=std_scaler)
@@ -456,7 +471,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print("Measuring time taken, this could take a while...")
 
     start_training_time = time.time()
-    debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=100, verbose=verbose)
+    debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=1000, verbose=verbose)
     end_training_time = time.time()
 
     if verbose:
