@@ -165,27 +165,26 @@ def test_basic_nationality_classification(word_vectors, dsv):
     return identity_scores
 
 class AdamOptimiser:
-    def __init__(self, size, gradient, theta_nought, alpha=0.001, beta_1=0.9, beta_2=0.999, epsilon=10**(-8)):
+    def __init__(self, size, theta_nought, alpha=0.001, beta_1=0.9, beta_2=0.999, epsilon=10**(-8)):
         self.alpha = alpha
         self.beta_1 = beta_1
         self.beta_2 = beta_2
         self.epsilon = epsilon
 
-        self.gradient = gradient
         self.theta_t = theta_nought
 
         self.t = 0
         self.m_t = np.zeros(shape=(size,))
         self.v_t = np.zeros(shape=(size,))
 
-    def step(self):
+    def step(self, gradient):
         self.t += 1
 
         # These are the things at time t - 1
         last_m = self.m_t
         last_v = self.v_t
         last_theta = self.theta_t
-        last_grad = self.gradient(last_theta)
+        last_grad = gradient
 
         # Then we process for time t
         m_t = self.beta_1 * last_m + (1 - self.beta_1) * last_grad
@@ -220,118 +219,64 @@ class AdversarialDebiaser:
         self.weight_scalar = None
         self.scaler = scaler
 
-    def _calculate_grad_Lp_wrt_W(self, weights):
-        partials = []
-        weight_norm_sq = np.sqrt(np.dot(weights, weights)) ** 2
-
-        for weight in weights:
-            partials.append(2 * weight_norm_sq * weight ** 2)
-
-        return np.array(partials)
-
-    def _calculate_grad_La_wrt_W(self, weights, adv_weights, instance):
-        partials = []
-        weight_norm_sq = np.sqrt(np.dot(weights, weights)) ** 2
-        U_dot_y = np.dot(adv_weights, instance)
-        k_dot_y = np.dot(self.dsv, instance)
-
-        for weight in weights:
-            partials.append(4 * weight * U_dot_y * (k_dot_y - 1 + weight_norm_sq))
-
-        return np.array(partials)
-
-    def _calculate_proj_gLp_on_gLa(self, weights):
-        vector = []
-        cubic_sum = 0
-
-        for weight in weights:
-            cubic_sum += weight ** 3
-            vector.append(2 * weight)
-
-        vector = np.array(vector)
-        vector = vector * cubic_sum
-        return vector
-
-    def _calculate_grad_La_wrt_U(self, weights, adv_weights, instance):
-        k_dot_y = np.dot(self.dsv, instance)
-        U_dot_y = np.dot(adv_weights, instance)
-        weight_norm_sq = np.sqrt(np.dot(weights, weights)) ** 2
-
-        partials = []
-
-        for i, _ in enumerate(adv_weights):
-            first = 2 * k_dot_y * (weight_norm_sq - 1) * instance[i]
-            second = 2 * (1 - weight_norm_sq) ** 2 * instance[i] * U_dot_y
-            partials.append(first + second)
-
-        return np.array(partials)
-
     def train(self, training_instances, alpha=0.5, iterations=50, batch_size=1000, verbose=True):
         m, feature_count = training_instances.shape
         rng = np.random.default_rng(seed=self.seed)
 
         W = rng.uniform(low=-1, high=1, size=(feature_count,))
-        # print(W.shape)
-        # W = self.scaler.transform(np.array([W]))[0]
-        # print(W.shape)
-        # W = W / np.sqrt(np.dot(W, W))
+        W /= np.sqrt(np.dot(W, W))
         U = rng.uniform(low=-1, high=1, size=(feature_count,))
-        # print(U.shape)
-        # U = self.scaler.transform(np.array([U]))[0]
-        # print(U.shape)
-        # U = U / np.sqrt(np.dot(U, U))
+        U /= np.sqrt(np.dot(U, U))
+
+        W_opt = AdamOptimiser(300, W)
+        U_opt = AdamOptimiser(300, U)
 
         for epoch in range(iterations):
             print("Epoch", epoch)
+            # obj =
             # I need to calculate grad Lp w.r.t W and grad La w.r.t W
-            batch = rng.choice(training_instances, size=(1000,))
+            batch = rng.choice(training_instances, size=(batch_size,))
             learning_rate = 0.001
 
-            for ins_id, instance in enumerate(batch):
-                # Calculate the grads
-                grad_Lp = self._calculate_grad_Lp_wrt_W(W)
-                grad_La = self._calculate_grad_La_wrt_W(W, U, instance)
-                projected_grads = self._calculate_proj_gLp_on_gLa(W)
-                objective = grad_Lp - projected_grads - alpha * grad_La #maybe swap back to - ?
-                # alt_objective = grad_Lp + projected_grads - alpha * grad_La
+            sum_grad_W = 0
+            sum_grad_U = 0
 
-                grad_La_wrt_U = self._calculate_grad_La_wrt_U(W, U, instance)
+            for ins_id, y in enumerate(batch):
+                # Do this because numpy vectors are difficult
+                # w * w^(T) * y as matrices:
+                y_w_prod = (W[:, np.newaxis] * W) @ y
+                y_hat = y - y_w_prod
 
-                # Now update the weights
-                updated_W = []
+                y_w_prod_sum = np.sum(y_w_prod)
+                new_grad_Lp_W = 2 / feature_count * y_w_prod_sum * y
 
-                for i, weight in enumerate(W):
-                    #print(grad_Lp[i])
-                    #time.sleep(1)
-                    updated_W.append(weight - learning_rate * objective[i])
+                U_dot_y_hat = y_hat.T @ U[:, np.newaxis]
+                k_dot_y = np.dot(self.dsv, y)
+                new_grad_La_U = 2 * (U_dot_y_hat - k_dot_y) * y_hat
 
-                updated_U = []
+                sum_grad_W += new_grad_Lp_W
+                sum_grad_U += new_grad_La_U
 
-                for i, adv_weight in enumerate(U):
-                    updated_U.append(adv_weight - learning_rate * grad_La_wrt_U[i])
+            avg_grad_W = sum_grad_W / batch_size
+            avg_grad_U = sum_grad_U / batch_size
 
-                W = np.array(updated_W)
-                # W = objective
-                # W = self.scaler.transform(np.array([W]))[0]
-                # print(W.shape)
-                # W = W / np.sqrt(np.dot(W, W))
-                U = np.array(updated_U)
-                # U = self.scaler.transform(np.array([U]))[0]
-                # U = U / np.sqrt(np.dot(U, U))
-
-                if ins_id == 0 or ins_id == 999:
-                    W_norm = np.sqrt(np.dot(W, W))
-                    print(f"Obj #{ins_id} {np.dot(objective, objective)}")
-                    print(f"W_norm {W_norm}")
+            W = W_opt.step(avg_grad_W)
+            W /= np.sqrt(np.dot(W, W))
+            U = U_opt.step(avg_grad_U)
+            U /= np.sqrt(np.dot(U, U))
 
             # print("Weights")
             # print(W)
             #
             # print("U WE")
             # print(U)
-            #
-            # W_norm = np.sqrt(np.dot(W, W))
-            # print(f"W_norm: {W_norm}")
+
+            #time.sleep(5)
+
+            W_norm = np.sqrt(np.dot(W, W))
+            dsv_dot = np.dot(self.dsv, W)
+            print(f"W_norm: {W_norm}")
+            print(f"Dir: {dsv_dot}")
 
         self.weights = W
         self.weight_scalar = np.dot(W, W)
@@ -347,7 +292,7 @@ class AdversarialDebiaser:
 
         # This is the formula that calculates the debiased vector
         # as set out in the original paper
-        y_hat = y - self.weight_scalar * y
+        y_hat = y - self.weights * self.weights.T * y
         return y_hat / np.sqrt((np.dot(y_hat, y_hat)))
 
 """
@@ -430,8 +375,8 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     # The directional sentiment vector is defined to be the signed difference between
     # the principal component axis of the positive and negative sentiment matrices
     dsv = negative_sig_comp - positive_sig_comp
+    dsv /= np.sqrt(np.dot(dsv, dsv))
     # Normalise the vector as it will be used for vector and scalar projections
-    dsv = dsv / np.sqrt(np.dot(dsv, dsv))
 
     if validations:
         # This is validation that the idea of projecting on to the DSV is sensible
@@ -459,8 +404,6 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
     for entry in get_nearest_neighbours(word_vectors, word_vectors.get_vector("female"), topn=10):
         print(entry)
-
-    return
 
     # The original paper stipulates that we train the debiaser on
     debiaser_training_data = np.random.default_rng(seed=seed).choice(word_vectors.vectors, size=(1000,))
