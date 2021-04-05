@@ -5,6 +5,7 @@ from matplotlib import pyplot as plt
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 import time
+import pandas as pd
 
 # Dictionary of files that may be used throughout the program
 FILE_PATHS = {
@@ -309,13 +310,28 @@ class AdversarialDebiaser:
         self.weight_scalar = np.dot(W, W)
         self.lowest = lowest_W
 
+    def load_from_file(self, filepath, lowest=False):
+        file = np.loadtxt(filepath)
+
+        print(file)
+        print(file.shape)
+
+        if lowest:
+            self.lowest = file
+        else:
+            self.weights = file
+
     """
     After training we can then debias a vector
     y - The vector to debias
     """
     def debias_vector(self, y, lowest=False):
-        if self.weights is None:
+        if not lowest and self.weights is None:
             print("Warning: The model has not been trained yet!")
+            return y
+
+        if lowest and self.lowest is None:
+            print("Warning: The model has not been trained yet! (Lowest)")
             return y
 
         if lowest:
@@ -406,9 +422,12 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
     # The directional sentiment vector is defined to be the signed difference between
     # the principal component axis of the positive and negative sentiment matrices
+    # Normalise the vector as it will be used for vector and scalar projections
     dsv = negative_sig_comp - positive_sig_comp
     dsv /= np.sqrt(np.dot(dsv, dsv))
-    # Normalise the vector as it will be used for vector and scalar projections
+
+    # filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_dsv.txt"
+    # np.savetxt(filename, dsv)
 
     if validations:
         # This is validation that the idea of projecting on to the DSV is sensible
@@ -464,4 +483,55 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
     np.savetxt(filename, debiasing_model.weights)
 
-main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5)
+def valence_data_to_csv(filepath, savepath):
+    df = pd.DataFrame(columns=["id", "tweet", "valence"])
+
+    with open(filepath, "r", encoding="utf-8") as file:
+        for i, line in enumerate(file.readlines()):
+            if i == 0:
+                continue
+
+            parts = line.split("\t")
+
+            df = df.append({ "id": parts[0].strip(), "tweet": parts[1].strip(), "valence": parts[3].strip() }, ignore_index=True)
+
+    df.to_csv(savepath, index=False)
+
+def loaded_main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5):
+    # Load the pre-trained word2vec vectors
+    word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
+    # Normalise the vectors
+    # CITATION NEEDED this is from a GitHub
+    word_vectors.vectors /= np.linalg.norm(word_vectors.vectors, axis=1)[:, np.newaxis]
+    std_scaler = StandardScaler(with_std=False, with_mean=True)
+    scaled = std_scaler.fit_transform(word_vectors.vectors)
+    word_vectors.vectors = scaled
+
+    # Load the positive and negative lexicons
+    positive_lexicon = load_lexicon(word_vectors, FILE_PATHS["positive_words"])
+    negative_lexicon = load_lexicon(word_vectors, FILE_PATHS["negative_words"])
+
+    # Convert them matrix form
+    positive_matrix = construct_w2v_matrix(word_vectors, positive_lexicon)
+    negative_matrix = construct_w2v_matrix(word_vectors, negative_lexicon)
+
+    # Find the most significant principal component axis for both matrices
+    # May also show the PCA chart depending on the parameters
+    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive_post_norm_no_sd_ss", display_chart=charts)
+    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative_post_norm_no_sd_ss", display_chart=charts)
+
+    # The directional sentiment vector is defined to be the signed difference between
+    # the principal component axis of the positive and negative sentiment matrices
+    # Normalise the vector as it will be used for vector and scalar projections
+    dsv = negative_sig_comp - positive_sig_comp
+    dsv /= np.sqrt(np.dot(dsv, dsv))
+
+    debiaser = AdversarialDebiaser(dsv=dsv, scaler=None)
+    debiaser.load_from_file("./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt", lowest=True)
+    validate_debiasing(word_vectors, debiaser, dsv)
+
+    # We can now do the classification task instead
+
+# main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5)
+# loaded_main()
+# valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-train.txt", "./SemReady/valence_training_set.csv")
