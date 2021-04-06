@@ -6,6 +6,8 @@ from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 import time
 import pandas as pd
+from sklearn.svm import SVR
+import scipy.stats.stats as stats
 
 # Dictionary of files that may be used throughout the program
 FILE_PATHS = {
@@ -327,13 +329,6 @@ class AdversarialDebiaser:
             W = W_opt.step(avg_obj)
             U = U_opt.step(avg_grad_U)
 
-        # This takes a long time so it is worth saving the results!
-        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_best_weights_a{alpha}_i{iterations}_s{self.seed}.txt"
-        np.savetxt(filename, lowest_W)
-
-        if verbose:
-            print(f"Saved weights to {filename}")
-
         # Save the trained lowest weights
         self.lowest = lowest_W
 
@@ -441,6 +436,75 @@ def valence_data_to_csv(filepath, savepath):
     # Save it to a CSV without an index since we have the IDs
     df.to_csv(savepath, index=False)
 
+"""
+Converts a string of text to the average of the vector representations of the words
+This is the method laid out in the research paper
+"""
+def text_to_vector(word_vectors, text):
+    # Initialise empty variables to compute the averages
+    vector = np.zeros(shape=(300,))
+    words = 0
+
+    # Split at the spaces
+    for word in text.split(" "):
+        word = word.strip().lower()
+
+        # I can only get an accurate vector if it is in the word embeddings
+        if word not in word_vectors:
+            continue
+
+        # Keep track of the total words and the total vector
+        words += 1
+        vector += word_vectors.get_vector(word)
+
+    # If we didn't find any recognised words return None
+    if words == 0:
+        return None
+
+    # Otherwise return the averaged vector
+    return vector / words
+
+"""
+Converts the CSV file of the SemEval-2018 dataset to a data frame
+Care must be taken because we convert the tweets to their vector form
+Each component of the vector then needs to become a vector
+"""
+def valence_csv_to_vectorised_df(word_vectors, path):
+    # Create the initial data frame from the CSV
+    df = pd.read_csv(path)
+    # We will compile a matrix representation of the rows
+    # This can then be imported into a fresh data frame
+    tweet_vectors_with_valence = []
+
+    # Iterate each row in the data frame
+    # Not the most efficient but the dataset is small so it is still
+    # fairly quick and it is clear what is happening
+    for _, row in df.iterrows():
+        # Convert the tweet to the vector form
+        tweet_vector = text_to_vector(word_vectors, row["tweet"])
+
+        # If the vector form is None (i.e. no recognised words) we get rid of it
+        if tweet_vector is None:
+            continue
+
+        # Concatenate so we have a 301 dimensional array
+        vector_and_valence = np.concatenate([tweet_vector, np.array([row["valence"]])])
+        tweet_vectors_with_valence.append(vector_and_valence)
+
+    # Construct the matrix of tweets with their valence scores
+    tweet_valence_mat = np.vstack(tweet_vectors_with_valence)
+    # Each feature is labelled as tf_vc_{index} (Tweet Feature Vector Component {index})
+    cols = [f"tf_vc_{i}" for i in range(300)] + ["valence"]
+    # Put it all together in a Pandas data frame for ease of use with the model
+    vectorised_df = pd.DataFrame(tweet_valence_mat, columns=cols)
+
+    # Split into unlabelled data and the labels so it can be used for training
+    # No need to split it in a ratio as the dataset comes pre-split
+    unlabelled = vectorised_df.drop("valence", axis=1)
+    labels = vectorised_df["valence"].copy()
+
+    return unlabelled, labels
+
 def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5, weights_location=None, debias=True):
     print("Loading the word2vec vectors...")
     # Load the pre-trained word2vec vectors
@@ -514,6 +578,8 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     if verbose:
         print("Debiaser initialised")
 
+    # If a weights file has been specified then load it
+    # Otherwise we need to train the model
     if weights_location is None:
         print("No weights file was provided; training the debiaser instead. This may take a significant amount of time.")
 
@@ -534,9 +600,13 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
             print()
             validate_debiasing(word_vectors, debiasing_model, dsv)
 
+        # Save the weights as they take a while to generate!
         filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
         np.savetxt(filename, debiasing_model.weights)
     else:
+        # Load using the specified file
+        # It is assumed that the file is correctly formatted as this is simply
+        # a step for convenience of testing and debugging
         debiasing_model.load_from_file(weights_location)
         print("Loaded pre-determined weights for debiaser. Skipped debiaser training.")
 
@@ -544,6 +614,64 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     print()
     print("Next Stage: Downstream Sentiment Valence Regression")
 
-main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location="./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt", debias=False)
+    if debias:
+        print("Debias mode enabled. Before regression the word2vecs need to be debiased.")
+
+        # Now we apply the debiasing to each vector
+        debias_start_time = time.time()
+
+        # It is important to do this in place otherwise the program maxs out on RAM!
+        for i, vector in enumerate(word_vectors.vectors):
+            word_vectors.vectors[i] = debiasing_model.debias_vector(vector)
+
+        debias_end_time = time.time()
+
+        if verbose:
+            print(f"Debiasing took {debias_end_time - debias_start_time} seconds.")
+            print("Now converting it to a numpy array and setting it in the model.")
+
+        print("Debiasing of word2vecs finished.")
+        validate_debiasing(word_vectors, debiasing_model, dsv)
+    else:
+        print("Debias mode disabled. No need to change word embeddings.")
+
+    if verbose:
+        print("Loading and vectorising valence training data set (SemEval-2018 Tweets)")
+
+    # Load the SemEval-2018 training data set
+    # We don't actually need the test data set unless we are validating later
+    training_unlabelled, training_labels = valence_csv_to_vectorised_df(word_vectors, "./SemReady/valence_training_set.csv")
+
+    if verbose:
+        print("Loaded valence training data set")
+
+    print("Training SVR valence model")
+
+    # Fit the SVR model with the training data only
+    model = SVR()
+    model.fit(training_unlabelled, training_labels)
+
+    print("Trained SVR valence model")
+
+    if validations:
+        test_unlabelled, test_labels = valence_csv_to_vectorised_df(word_vectors, "./SemReady/valence_test_set.csv")
+        print("Predicting using test set")
+
+        valence_predictions = model.predict(test_unlabelled)
+        # Use scipy to calculate the Pearson's Correlation Coefficient
+        valence_pearsons = stats.pearsonr(test_labels, valence_predictions)
+
+        print("Pearsons for the original paper was 0.42 for biased and 0.43 for debiased")
+        print(f"Pearsons: {valence_pearsons}")
+
+        if charts:
+            # Plot a scatter of the actual and predicted values
+            # Then fit a line of best fit through them
+            plt.scatter(x=test_labels, y=valence_predictions)
+            valence_m, valence_b = np.polyfit(test_labels, valence_predictions, deg=1)
+            plt.plot(test_labels, valence_m * test_labels + valence_b, color="orange")
+            plt.show()
+
+main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location="./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt", debias=True)
 
 # valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
