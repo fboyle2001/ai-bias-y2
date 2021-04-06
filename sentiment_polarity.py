@@ -165,7 +165,15 @@ def test_basic_nationality_classification(word_vectors, dsv):
 
     return identity_scores
 
+"""
+Implementation of the Adam Optimiser for Stochastic Gradient Descent Optimisation
+Reference: CITATION NEEDED
+"""
 class AdamOptimiser:
+    """
+    Adam has a few parameters, these are defaulted to those recommended by the original paper
+    outlining the algorithm. theta_t is the value of the parameters at time t.
+    """
     def __init__(self, size, theta_nought, alpha=0.001, beta_1=0.9, beta_2=0.999, epsilon=10**(-8)):
         self.alpha = alpha
         self.beta_1 = beta_1
@@ -178,6 +186,9 @@ class AdamOptimiser:
         self.m_t = np.zeros(shape=(size,))
         self.v_t = np.zeros(shape=(size,))
 
+    """
+    Computes an optimisation step according to the Adam algorithm
+    """
     def step(self, gradient):
         self.t += 1
 
@@ -187,14 +198,18 @@ class AdamOptimiser:
         last_theta = self.theta_t
         last_grad = gradient
 
-        # Then we process for time t
+        # Calculate the zero-biased moments for time t
         m_t = self.beta_1 * last_m + (1 - self.beta_1) * last_grad
         v_t = self.beta_2 * last_v + (1 - self.beta_2) * np.square(last_grad)
 
+        # Corrects the zero bias as m_t and v_t are initialised as zero vectors
         bias_cor_m_t = m_t / (1 - self.beta_1 ** self.t)
         bias_cor_v_t = v_t / (1 - self.beta_2 ** self.t)
+
+        # Update the parameters using the moments
         updated_theta = last_theta - self.alpha * bias_cor_m_t / (bias_cor_v_t + self.epsilon)
 
+        # Save the values for the next step
         self.theta_t = updated_theta
         self.m_t = m_t
         self.v_t = v_t
@@ -202,8 +217,9 @@ class AdamOptimiser:
         return self.theta_t
 
 """
-This class contains everything required to perform Gradient Descent to debias the
-word embeddings
+Debias the word vectors according to two adversarial objectives designed to reduce sentiment polarity
+while also keeping word vectors near to their original meaning
+Reference: CITATION NEEDED
 """
 class AdversarialDebiaser:
     """
@@ -213,55 +229,77 @@ class AdversarialDebiaser:
     alpha - A parameter used to determine the tradeoff between objectives
     seed - Set the random generator seed (useful for debugging with results that can be replicated)
     """
-    def __init__(self, dsv, scaler, seed=None):
+    def __init__(self, dsv, seed=None):
         self.dsv = dsv
         self.seed = seed
-        self.weights = None
-        self.weight_scalar = None
-        self.scaler = scaler
         self.lowest = None
 
-    def train(self, training_instances, alpha=0.5, iterations=50, batch_size=1000, verbose=True):
+    """
+    Trains the debiaser according to the objectives using adversarial debiasing
+    This takes ~2 hours to train (uses iterations * batch_size samples) on an Intel i7-9700k
+    """
+    def train(self, training_instances, alpha=0.5, iterations=40000, batch_size=1000, verbose=True):
+        # m is the standard for the number of samples
         m, feature_count = training_instances.shape
+        # Seed the random so that I can get reproducible results for testing
         rng = np.random.default_rng(seed=self.seed)
 
+        # Initialise random weights for the start
+        # W are the weights for the retention of meaning objective
         W = rng.uniform(low=-1, high=1, size=(feature_count,))
-        # W /= np.sqrt(np.dot(W, W))
+        # U are the weights for the debiasing objective
         U = rng.uniform(low=-1, high=1, size=(feature_count,))
-        # U /= np.sqrt(np.dot(U, U))
+        # These variable names are used to match with the papers objective functions
 
+        # Initialise the Adam Optimisers for each objective
         W_opt = AdamOptimiser(300, W)
         U_opt = AdamOptimiser(300, U)
 
+        # Since this is Stochastic it would be possible to get a worse solution at the end epoch
+        # than at some epoch in [0, iterations) so I track the best one to give us the best results
+        # at the end
+        # Ultimately, we only want W, U is used for training only
         lowest_W = None
         min_obj = None
 
+        # Perform the iterative Mini-Batch Gradient Descent
         for epoch in range(iterations):
-            print("Epoch", epoch)
-            # obj =
-            # I need to calculate grad Lp w.r.t W and grad La w.r.t W
-            batch = rng.choice(training_instances, size=(batch_size,))
-            learning_rate = 0.001
+            if verbose:
+                print(f"Epoch {epoch}")
 
+            # Select a batch from the training instances
+            batch = rng.choice(training_instances, size=(batch_size,))
+
+            # I average out the gradients and objectives over the batch to use
+            # in the optimiser
             sum_grad_W = 0
             sum_grad_U = 0
             sum_obj = 0
 
-            for ins_id, y in enumerate(batch):
-                # Do this because numpy vectors are difficult
-                # w * w^(T) * y as matrices:
+            # Calculate the objective and gradients for each instance of the batch
+            for y in batch:
+                # Compute ww^(T)*y using matrix multiplication
                 y_w_prod = (W[:, np.newaxis] * W) @ y
+                # y_hat is the sentiment-debiased word vector
                 y_hat = y - y_w_prod
 
+                # Sum W element-wise, this is a scaling factor found via the derivation of the gradient
                 y_w_prod_sum = np.sum(y_w_prod)
+                # This is the gradient of the loss function Lp with respect to W
                 new_grad_Lp_W = 2 / feature_count * y_w_prod_sum * y
 
+                # Now we move on to calculating the gradient of La with respect to W
+                # Adversarial sentiment polarity
                 U_dot_y_hat = y_hat.T @ U[:, np.newaxis]
+                # Sentiment polarity
                 k_dot_y = np.dot(self.dsv, y)
+                # A scaling factor derived during calculation of the gradient
                 La_pre_factor = 2 * (U_dot_y_hat - k_dot_y)
 
+                # The gradient of La w.r.t W
                 new_grad_La_W = La_pre_factor * (W * (m + 1) + m - 1)
 
+                #
                 normed_La_W = new_grad_La_W / np.linalg.norm(new_grad_La_W)
                 scalar_proj = np.dot(new_grad_Lp_W, normed_La_W)
                 proj = scalar_proj * normed_La_W
@@ -281,67 +319,47 @@ class AdversarialDebiaser:
             if min_obj is None or obj_score < min_obj:
                 lowest_W = W
                 min_obj = obj_score
-                print(f"Min Obj {min_obj}")
 
-            # print(f"Obj {obj_score}")
+                if verbose:
+                    print(f"New Min Obj {min_obj}")
 
+            # Let the optimiser determine the new weights
             W = W_opt.step(avg_obj)
-            #W /= np.sqrt(np.dot(W, W))
             U = U_opt.step(avg_grad_U)
-            #U /= np.sqrt(np.dot(U, U))
 
-            # print("Weights")
-            # print(W)
-            #
-            # print("U WE")
-            # print(U)
-
-            #time.sleep(5)
-
-            # W_norm = np.sqrt(np.dot(W, W))
-            # dsv_dot = np.dot(self.dsv, W)
-            # print(f"W_norm: {W_norm}")
-            # print(f"Dir: {dsv_dot}")
-
-        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_BEST_weights_a{alpha}_i{iterations}_s{self.seed}.txt"
+        # This takes a long time so it is worth saving the results!
+        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_best_weights_a{alpha}_i{iterations}_s{self.seed}.txt"
         np.savetxt(filename, lowest_W)
 
-        self.weights = W
-        self.weight_scalar = np.dot(W, W)
+        if verbose:
+            print(f"Saved weights to {filename}")
+
+        # Save the trained lowest weights
         self.lowest = lowest_W
 
-    def load_from_file(self, filepath, lowest=False):
+    """
+    Load pre-determined weights from a txt file
+    This is useful because the training takes 2 hours to run!
+    """
+    def load_from_file(self, filepath):
+        # Let numpy load the file into an array
         file = np.loadtxt(filepath)
-
-        print(file)
-        print(file.shape)
-
-        if lowest:
-            self.lowest = file
-        else:
-            self.weights = file
+        self.lowest = file
 
     """
     After training we can then debias a vector
     y - The vector to debias
+    lowest - Whether to use the lowest weights or the last weights
     """
-    def debias_vector(self, y, lowest=False):
-        if not lowest and self.weights is None:
-            print("Warning: The model has not been trained yet!")
-            return y
-
-        if lowest and self.lowest is None:
+    def debias_vector(self, y):
+        # Predictions can't be made if the model is untrained
+        if self.lowest is None:
             print("Warning: The model has not been trained yet! (Lowest)")
             return y
 
-        if lowest:
-            y_hat = y - self.lowest * self.lowest.T * y
-            return y_hat
-
-        # This is the formula that calculates the debiased vector
-        # as set out in the original paper
-        y_hat = y - self.weights * self.weights.T * y
-        return y_hat / np.sqrt((np.dot(y_hat, y_hat)))
+        # The, hopefully, debiased word vector!
+        y_hat = y - self.lowest * self.lowest.T * y
+        return y_hat
 
 """
 Simply calculates the sentiment scalar projection of a word embedding vector
@@ -384,7 +402,7 @@ def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female", "fr
 
         print()
 
-        debiased_vector = debiaser.debias_vector(vector, lowest=True)
+        debiased_vector = debiaser.debias_vector(vector)
         debias_sentiment = calculate_sentiment(dsv, debiased_vector)
         print("Post-debiasing sentiment:", debias_sentiment)
         relative_sentiment_change = np.abs(pre_debias_sentiment - debias_sentiment) / np.abs(pre_debias_sentiment)
@@ -397,9 +415,38 @@ def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female", "fr
         print("-------------")
         print()
 
-def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5):
+"""
+The SemEval-2018 Tweet dataset came as a tab-delimited file.
+This function removes unneeded columns and converts the file to a CSV.
+"""
+def valence_data_to_csv(filepath, savepath):
+    # The data frame with the structure of the columns set out
+    df = pd.DataFrame(columns=["id", "tweet", "valence"])
+
+    # Open the file with UTF-8 as it contains emojis
+    with open(filepath, "r", encoding="utf-8") as file:
+        # Loop over each line
+        for i, line in enumerate(file.readlines()):
+            # The very first line is the column headings
+            if i == 0:
+                continue
+
+            # Tab-delimited so split on the tabs
+            parts = line.split("\t")
+
+            # parts[0] = ID, parts[1] = Tweet, parts[2] = Affect Dimension (irrelevant for this task), parts[3] = Valence
+            # Strip whitespace from the ends to remove \n from the valence column
+            df = df.append({ "id": parts[0].strip(), "tweet": parts[1].strip(), "valence": parts[3].strip() }, ignore_index=True)
+
+    # Save it to a CSV without an index since we have the IDs
+    df.to_csv(savepath, index=False)
+
+def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5, weights_location=None, debias=True):
+    print("Loading the word2vec vectors...")
     # Load the pre-trained word2vec vectors
     word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
+    print("Loaded the word2vec vectors.")
+    print("Processing the vector data. For more in-depth information, set verbose=True in the main function.")
     # Normalise the vectors
     # CITATION NEEDED this is from a GitHub
     word_vectors.vectors /= np.linalg.norm(word_vectors.vectors, axis=1)[:, np.newaxis]
@@ -407,18 +454,30 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     scaled = std_scaler.fit_transform(word_vectors.vectors)
     word_vectors.vectors = scaled
 
+    if verbose:
+        print("Normalised and scaled the word2vec vectors.")
+
     # Load the positive and negative lexicons
     positive_lexicon = load_lexicon(word_vectors, FILE_PATHS["positive_words"])
     negative_lexicon = load_lexicon(word_vectors, FILE_PATHS["negative_words"])
+
+    if verbose:
+        print("Loaded the positive and negative sentiment lexicons.")
 
     # Convert them matrix form
     positive_matrix = construct_w2v_matrix(word_vectors, positive_lexicon)
     negative_matrix = construct_w2v_matrix(word_vectors, negative_lexicon)
 
+    if verbose:
+        print("Converted the sentiment lexicons to word2vec matrices.")
+
     # Find the most significant principal component axis for both matrices
     # May also show the PCA chart depending on the parameters
     positive_sig_comp = principal_component_analysis(positive_matrix, name="positive_post_norm_no_sd_ss", display_chart=charts)
     negative_sig_comp = principal_component_analysis(negative_matrix, name="negative_post_norm_no_sd_ss", display_chart=charts)
+
+    if verbose:
+        print("Completed principal component analysis on each sentiment lexicon.")
 
     # The directional sentiment vector is defined to be the signed difference between
     # the principal component axis of the positive and negative sentiment matrices
@@ -426,8 +485,10 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     dsv = negative_sig_comp - positive_sig_comp
     dsv /= np.sqrt(np.dot(dsv, dsv))
 
-    # filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_dsv.txt"
-    # np.savetxt(filename, dsv)
+    if verbose:
+        print("Calculate the directional sentiment vector.")
+
+    print("Processed vector data.")
 
     if validations:
         # This is validation that the idea of projecting on to the DSV is sensible
@@ -438,6 +499,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         # The only problem is that German and Italian are swapped (by a somewhat significant amount)
         nationality_scores = test_basic_nationality_classification(word_vectors, dsv)
 
+        print()
         print("Sentiment Lexicon Classification Validation")
         print(sentiment_test_results)
         print()
@@ -446,92 +508,42 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print(nationality_scores)
         print()
 
-    print(f"10 nearest neighbours (male)")
-
-    for entry in get_nearest_neighbours(word_vectors, word_vectors.get_vector("male"), topn=10):
-        print(entry)
-
-    print(f"10 nearest neighbours (female)")
-
-    for entry in get_nearest_neighbours(word_vectors, word_vectors.get_vector("female"), topn=10):
-        print(entry)
-
-    # The original paper stipulates that we train the debiaser on
-    debiaser_training_data = np.random.default_rng(seed=seed).choice(word_vectors.vectors, size=(1000,))
-    debiasing_model = AdversarialDebiaser(dsv, seed=seed, scaler=std_scaler)
+    # Initialise the debiaser
+    debiasing_model = AdversarialDebiaser(dsv, seed=seed)
 
     if verbose:
-        print(f"Starting training of debiaser model with alpha={alpha}, iterations={iterations}, seed={seed}")
-        print("Measuring time taken, this could take a while...")
+        print("Debiaser initialised")
 
-    start_training_time = time.time()
-    debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=40000, verbose=verbose)
-    end_training_time = time.time()
+    if weights_location is None:
+        print("No weights file was provided; training the debiaser instead. This may take a significant amount of time.")
 
-    if verbose:
-        print("Debiaser trained")
-        print(f"Debiaser training took {end_training_time - start_training_time} seconds")
+        if verbose:
+            print(f"Starting training of debiaser model with alpha={alpha}, iterations={iterations}, seed={seed}")
+            print("Measuring time taken, this could take a while...")
 
-    if validations:
-        print("Validating the Debiaser")
-        print()
-        validate_debiasing(word_vectors, debiasing_model, dsv)
+        # Train the debiaser model
+        start_training_time = time.time()
+        debiasing_model.train(word_vectors.vectors, alpha=alpha, iterations=iterations, verbose=verbose)
+        end_training_time = time.time()
 
-    print("w^T . dsv", np.dot(dsv, debiasing_model.weights))
-    print("||w||", np.sqrt(debiasing_model.weight_scalar))
+        if verbose:
+            print(f"Debiaser trained. Took {end_training_time - start_training_time} seconds.")
 
-    filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
-    np.savetxt(filename, debiasing_model.weights)
+        if validations:
+            print("Validating the Debiaser")
+            print()
+            validate_debiasing(word_vectors, debiasing_model, dsv)
 
-def valence_data_to_csv(filepath, savepath):
-    df = pd.DataFrame(columns=["id", "tweet", "valence"])
+        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
+        np.savetxt(filename, debiasing_model.weights)
+    else:
+        debiasing_model.load_from_file(weights_location)
+        print("Loaded pre-determined weights for debiaser. Skipped debiaser training.")
 
-    with open(filepath, "r", encoding="utf-8") as file:
-        for i, line in enumerate(file.readlines()):
-            if i == 0:
-                continue
+    print("Debiaser ready for use.")
+    print()
+    print("Next Stage: Downstream Sentiment Valence Regression")
 
-            parts = line.split("\t")
+main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location="./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt", debias=False)
 
-            df = df.append({ "id": parts[0].strip(), "tweet": parts[1].strip(), "valence": parts[3].strip() }, ignore_index=True)
-
-    df.to_csv(savepath, index=False)
-
-def loaded_main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5):
-    # Load the pre-trained word2vec vectors
-    word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
-    # Normalise the vectors
-    # CITATION NEEDED this is from a GitHub
-    word_vectors.vectors /= np.linalg.norm(word_vectors.vectors, axis=1)[:, np.newaxis]
-    std_scaler = StandardScaler(with_std=False, with_mean=True)
-    scaled = std_scaler.fit_transform(word_vectors.vectors)
-    word_vectors.vectors = scaled
-
-    # Load the positive and negative lexicons
-    positive_lexicon = load_lexicon(word_vectors, FILE_PATHS["positive_words"])
-    negative_lexicon = load_lexicon(word_vectors, FILE_PATHS["negative_words"])
-
-    # Convert them matrix form
-    positive_matrix = construct_w2v_matrix(word_vectors, positive_lexicon)
-    negative_matrix = construct_w2v_matrix(word_vectors, negative_lexicon)
-
-    # Find the most significant principal component axis for both matrices
-    # May also show the PCA chart depending on the parameters
-    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive_post_norm_no_sd_ss", display_chart=charts)
-    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative_post_norm_no_sd_ss", display_chart=charts)
-
-    # The directional sentiment vector is defined to be the signed difference between
-    # the principal component axis of the positive and negative sentiment matrices
-    # Normalise the vector as it will be used for vector and scalar projections
-    dsv = negative_sig_comp - positive_sig_comp
-    dsv /= np.sqrt(np.dot(dsv, dsv))
-
-    debiaser = AdversarialDebiaser(dsv=dsv, scaler=None)
-    debiaser.load_from_file("./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt", lowest=True)
-    validate_debiasing(word_vectors, debiaser, dsv)
-
-    # We can now do the classification task instead
-
-# main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5)
-# loaded_main()
-# valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-train.txt", "./SemReady/valence_training_set.csv")
+# valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
