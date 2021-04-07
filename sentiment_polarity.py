@@ -545,10 +545,13 @@ def load_gender_EEC_df(path):
     template_cats = df["Template"].astype("category").cat.codes
     df["Template"] = template_cats
     ew_cats = df["Emotion word"].astype("category").cat.codes
-    df["Emotion word"] = df["Emotion word"].astype("category").cat.codes
+    df["Emotion word"] = ew_cats
 
     return df, noun_phrase_index, template_cats.unique(), ew_cats.unique()
 
+"""
+Converts the EEC sentences in the data frame to their vectorised representations
+"""
 def vectorise_df_sentences(word_vectors, df):
     new_df = df.copy()
 
@@ -816,3 +819,4 @@ w_l_glove = "./weights/2021-04-06T12-23-53.366657_BEST_weights_a0.5_i40000_s1828
 w_l_gn = "./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt"
 main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location=w_l_gn, debias=True)
 # valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
+#load_gender_EEC_df("./Equity-Evaluation-Corpus/Equity-Evaluation-Corpus.csv")

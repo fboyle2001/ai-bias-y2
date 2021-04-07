@@ -3,6 +3,7 @@
 *.npy
 *.png
 *.pdf
+!report/*.pdf
 *.csv
 *.bin
 *.gz
