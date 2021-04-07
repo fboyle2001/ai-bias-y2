@@ -454,7 +454,7 @@ def text_to_vector(word_vectors, text):
     for word in text.split(" "):
         word = word.strip().lower()
         # Replace all punctuation
-        word = re.sub('[^\w\d\s]', "", word)
+        # word = re.sub('[^\w\d\s]', "", word)
 
         # I can only get an accurate vector if it is in the word embeddings
         if word not in word_vectors:
@@ -573,7 +573,7 @@ def vectorise_df_sentences(word_vectors, df):
 def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5, weights_location=None, debias=True):
     print("Loading the word2vec vectors...")
     # Load the pre-trained word2vec vectors
-    word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-glove"])
+    word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
     print("Loaded the word2vec vectors.")
     print("Processing the vector data. For more in-depth information, set verbose=True in the main function.")
     # Normalise the vectors
@@ -713,7 +713,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     print("Training SVR valence model")
 
     # Fit the SVR model with the training data only
-    model = SVR()
+    model = SVR(kernel="linear")
     model.fit(training_unlabelled, training_labels)
 
     print("Trained SVR valence model")
@@ -743,53 +743,76 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     # i.e. emotion, template, and gender
     EEC_df, noun_phrase_index, template_cats, ew_cats = load_gender_EEC_df("./Equity-Evaluation-Corpus/Equity-Evaluation-Corpus.csv")
     EEC_sentence_vectors, EEC_other_features = vectorise_df_sentences(word_vectors, EEC_df)
+    # Predict the valence of each sentence in the EEC
     EEC_sentence_valences = model.predict(EEC_sentence_vectors)
 
+    # Set the valences on the data frame for easy access
     EEC_df["valence"] = EEC_sentence_valences
-    EEC_df.sort_values(by=["Template", "Person", "Emotion word", "Gender"]).to_csv("test.csv")
 
+    # EEC_df.sort_values(by=["Template", "Person", "Emotion word", "Gender"]).to_csv("test.csv")
+
+    # I need the unique values so that I can loop over and compare each gendered sentence
     unique_np_indices = set(noun_phrase_index.values())
 
-    print("TC", template_cats)
-    print("NPI", unique_np_indices)
-
-    count = 0
-
     # Now we need to see what the valence difference is between sentences of the same template but for different genders
-
     m_up_f_down = []
     m_down_f_up = []
 
+    # Loop over every template
     for template in template_cats:
+        # And every noun phrase
         for npi in unique_np_indices:
+            # Select the records that have this specific template and noun phrase
             template_npi_records = EEC_df[(EEC_df["Template"] == template) & (EEC_df["Person"] == npi)]
+            # Not all emotion words are used for each sentence
+            # So get those that are used for these specific records
             unique_ews = template_npi_records["Emotion word"].unique()
-            count += 1
 
+            # Loop over each emotion word in this set of records
             for ew in unique_ews:
+                # Select the specific records for this emotion word (should return 2 records)
+                # And split into the male and female record
                 diff_records = template_npi_records[template_npi_records["Emotion word"] == ew]
                 male_record = diff_records[diff_records["Gender"] == "male"].iloc[0]
                 female_record = diff_records[diff_records["Gender"] == "female"].iloc[0]
 
+                # Calculate the difference in the valence
                 valence_diff = male_record["valence"] - female_record["valence"]
 
-                if valence_diff >= 0:
+                # If it is > 0 then it is biased towards men
+                # We want the absolute value each time
+                if valence_diff > 0:
                     m_up_f_down.append(valence_diff)
                 else:
                     m_down_f_up.append(-valence_diff)
 
-    print("Pairs", count)
+    # Now display the results
 
-    print("Total m_up", len(m_up_f_down))
+    if charts:
+        print("Plotting the sentence deltas for M up, F down sentiment bias")
+        plt.scatter(x=np.arange(len(m_up_f_down)), y=m_up_f_down)
+        plt.show()
+
+        print("Plotting the sentence deltas for F up, M down sentiment bias")
+        plt.scatter(x=np.arange(len(m_down_f_up)), y=m_down_f_up)
+        plt.show()
+
+    print("Total pairs biased towards males:", len(m_up_f_down))
+
     if len(m_up_f_down) != 0:
-        print("Avg delta m_up", sum(m_up_f_down) / len(m_up_f_down))
+        print("Mean sentence delta for M up:", sum(m_up_f_down) / len(m_up_f_down))
+        print("Sentence delta variance for M up:", np.var(m_up_f_down))
 
-    print("Total m_down", len(m_down_f_up))
+    print()
+
+    print("Total pairs biased towards females:", len(m_down_f_up))
+
     if len(m_down_f_up) != 0:
-        print("Avg delta m_down", sum(m_down_f_up) / len(m_down_f_up))
+        print("Mean sentence delta for F up:", sum(m_down_f_up) / len(m_down_f_up))
+        print("Sentence delta variance for F up:", np.var(m_down_f_up))
 
 
 w_l_glove = "./weights/2021-04-06T12-23-53.366657_BEST_weights_a0.5_i40000_s1828.txt"
 w_l_gn = "./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt"
-main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location=w_l_glove, debias=False)
+main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location=w_l_gn, debias=True)
 # valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
