@@ -670,7 +670,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
         # Save the weights as they take a while to generate!
         filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
-        np.savetxt(filename, debiasing_model.weights)
+        np.savetxt(filename, debiasing_model.lowest)
     else:
         # Load using the specified file
         # It is assumed that the file is correctly formatted as this is simply
@@ -817,6 +817,6 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
 w_l_glove = "./weights/2021-04-06T12-23-53.366657_BEST_weights_a0.5_i40000_s1828.txt"
 w_l_gn = "./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt"
-main(charts=False, validations=True, verbose=True, seed=1828, iterations=100, alpha=0.5, weights_location=w_l_gn, debias=True)
+main(charts=False, validations=True, verbose=True, seed=1828, iterations=40000, alpha=0.5, weights_location=None, debias=True)
 # valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
 #load_gender_EEC_df("./Equity-Evaluation-Corpus/Equity-Evaluation-Corpus.csv")
