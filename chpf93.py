@@ -1,3 +1,29 @@
+"""
+Bias AI Project Implementation 2021
+
+This project was written in Python 3.8.2 using the following modules and versions:
+- gensim 4.0.1
+- scikit-learn 0.23.2
+- numpy 1.19.2
+- matplotlib 3.3.2
+- pandas 1.1.3
+- scipy 1.5.3
+- time, datetime, re, os (standard libraries included with Python)
+
+Before running this please ensure that the folder structure looks like so:
+- chpf93.py
+- 2018-Valence-reg-En-test-gold.txt
+- 2018-Valence-reg-En-train.txt
+- negative-words.txt
+- positive-words.txt
+- 2021-04-08T12-37-34.168980_weights_a0.5_i40000_s1828.txt
+- Equity-Evaluation-Corpus.csv
+
+This program will download the Google News Corpus (~1.8 GB download!)
+Configuration options are included at the bottom with the main function
+"""
+
+import gensim.downloader as api
 from gensim.models.word2vec import Word2Vec, KeyedVectors
 from sklearn.decomposition import PCA
 import numpy as np
@@ -9,21 +35,10 @@ import pandas as pd
 from sklearn.svm import SVR
 import scipy.stats.stats as stats
 import re
-
-pd.set_option('display.max_rows', 500)
-pd.set_option('display.max_columns', 500)
-pd.set_option('display.width', 1000)
-
-# Dictionary of files that may be used throughout the program
-FILE_PATHS = {
-    "pretrained-w2v-google-news": "pretrained-word2vec-keyedvectors.kv",
-    "pretrained-glove": "pretrained-glove-keyedvectors.kv",
-    "positive_words": "./opinion-lexicon-English/positive-words.txt",
-    "negative_words": "./opinion-lexicon-English/negative-words.txt"
-}
+import os
 
 """
-Loads a file of words from the Sentiment Lexicon (CITATION NEEDED)
+Loads a file of words from the Sentiment Lexicon
 
 word_vectors - The word2vec pre-trained model
 filepath - The location of the lexicon file
@@ -99,16 +114,20 @@ n_components - Number of components to find (and plot) in PCA
 display_chart - Display (and save) the bar chart of the top n_components explained variance ratios
 """
 def principal_component_analysis(matrix, name="unknown", n_components=30, display_chart=False):
+    # Use sklearns PCA class rather than implement this directly
     pca = PCA(n_components=n_components)
     pca.fit(matrix)
 
     if display_chart:
+        # Displays and saves the PCA chart
         plt.bar(range(n_components), pca.explained_variance_ratio_[:n_components])
-        #CHANGE BEFORE SUBMISSION TO DEF DIRECTORY
-        filename = f"./pca_charts/{datetime.now().isoformat().replace(':', '-')}_pca_{name}.png"
+        plt.xlabel("Principal Components")
+        plt.ylabel("Explained Variance Ratio")
+        filename = f"{datetime.now().isoformat().replace(':', '-')}_pca_chart_{name}.png"
         plt.savefig(filename)
         plt.show()
 
+    # components_ is sorted by explained variance so this is the top component
     return pca.components_[0]
 
 """
@@ -174,7 +193,6 @@ def test_basic_nationality_classification(word_vectors, dsv):
 
 """
 Implementation of the Adam Optimiser for Stochastic Gradient Descent Optimisation
-Reference: CITATION NEEDED
 """
 class AdamOptimiser:
     """
@@ -226,7 +244,6 @@ class AdamOptimiser:
 """
 Debias the word vectors according to two adversarial objectives designed to reduce sentiment polarity
 while also keeping word vectors near to their original meaning
-Reference: CITATION NEEDED
 """
 class AdversarialDebiaser:
     """
@@ -246,6 +263,9 @@ class AdversarialDebiaser:
     This takes ~2 hours to train (uses iterations * batch_size samples) on an Intel i7-9700k
     """
     def train(self, training_instances, alpha=0.5, iterations=40000, batch_size=1000, verbose=True):
+        if verbose:
+            print("Starting training, this will output the current epoch every 1000 epochs.")
+
         # m is the standard for the number of samples
         m, feature_count = training_instances.shape
         # Seed the random so that I can get reproducible results for testing
@@ -271,7 +291,7 @@ class AdversarialDebiaser:
 
         # Perform the iterative Mini-Batch Gradient Descent
         for epoch in range(iterations):
-            if verbose:
+            if verbose and epoch % 1000 == 0:
                 print(f"Epoch {epoch}")
 
             # Select a batch from the training instances
@@ -290,29 +310,18 @@ class AdversarialDebiaser:
                 # y_hat is the sentiment-debiased word vector
                 y_hat = y - y_w_prod
 
-                # Sum W element-wise, this is a scaling factor found via the derivation of the gradient
-                y_w_prod_sum = np.sum(y_w_prod)
-                # This is the gradient of the loss function Lp with respect to W
-                new_grad_Lp_W = 2 / feature_count * y_w_prod_sum * y
+                # Calculate the gradients using the formulas in my report
+                new_grad_Lp_W = 2 / feature_count * y * np.dot(W, y_w_prod)
+                La_pre_factor = 2 * (np.dot(U, y_hat) - np.dot(self.dsv, y))
+                new_grad_La_W = -La_pre_factor * np.dot(W, y) * (U + y)
+                new_grad_La_U = La_pre_factor * y_hat
 
-                # Now we move on to calculating the gradient of La with respect to W
-                # Adversarial sentiment polarity
-                U_dot_y_hat = y_hat.T @ U[:, np.newaxis]
-                # Sentiment polarity
-                k_dot_y = np.dot(self.dsv, y)
-                # A scaling factor derived during calculation of the gradient
-                La_pre_factor = 2 * (U_dot_y_hat - k_dot_y)
-
-                # The gradient of La w.r.t W
-                new_grad_La_W = La_pre_factor * (W * (m + 1) + m - 1)
-
-                #
+                # Calculate the objective function
                 normed_La_W = new_grad_La_W / np.linalg.norm(new_grad_La_W)
                 scalar_proj = np.dot(new_grad_Lp_W, normed_La_W)
                 proj = scalar_proj * normed_La_W
 
-                new_grad_La_U = La_pre_factor * y_hat
-
+                # Keep track of the sum so they can be averaged
                 sum_grad_W += new_grad_Lp_W
                 sum_grad_U += new_grad_La_U
                 sum_obj += new_grad_Lp_W - proj - alpha * new_grad_La_W
@@ -326,9 +335,6 @@ class AdversarialDebiaser:
             if min_obj is None or obj_score < min_obj:
                 lowest_W = W
                 min_obj = obj_score
-
-                if verbose:
-                    print(f"New Min Obj {min_obj}")
 
             # Let the optimiser determine the new weights
             W = W_opt.step(avg_obj)
@@ -389,7 +395,7 @@ debiaser - An AdversarialDebiaser instance (that is trained)
 dsv - The directional sentiment vector
 words - The words to debias the sentiment of
 """
-def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female", "frank", "american", "josh", "german", "harry", "tia", "jasmine", "betsy"], topn=10):
+def validate_debiasing(word_vectors, debiaser, dsv, words=["male", "female"], topn=10):
     for word in words:
         vector = word_vectors.get_vector(word)
         print(f"Analysis of {word}")
@@ -573,10 +579,14 @@ def vectorise_df_sentences(word_vectors, df):
 
     return sentence_vectors, other_features
 
+"""
+The main function that initialises and runs everything.
+The arguments are explained at the bottom where this function is called instead.
+"""
 def main(charts=False, validations=False, verbose=False, seed=None, iterations=100, alpha=0.5, weights_location=None, debias=True):
     print("Loading the word2vec vectors...")
     # Load the pre-trained word2vec vectors
-    word_vectors = KeyedVectors.load(FILE_PATHS["pretrained-w2v-google-news"])
+    word_vectors = KeyedVectors.load("pretrained-word2vec-keyedvectors.kv")
     print("Loaded the word2vec vectors.")
     print("Processing the vector data. For more in-depth information, set verbose=True in the main function.")
     # Normalise the vectors
@@ -590,8 +600,8 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print("Normalised and scaled the word2vec vectors.")
 
     # Load the positive and negative lexicons
-    positive_lexicon = load_lexicon(word_vectors, FILE_PATHS["positive_words"])
-    negative_lexicon = load_lexicon(word_vectors, FILE_PATHS["negative_words"])
+    positive_lexicon = load_lexicon(word_vectors, "positive-words.txt")
+    negative_lexicon = load_lexicon(word_vectors, "negative-words.txt")
 
     if verbose:
         print("Loaded the positive and negative sentiment lexicons.")
@@ -605,8 +615,8 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
     # Find the most significant principal component axis for both matrices
     # May also show the PCA chart depending on the parameters
-    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive_post_norm_no_sd_ss", display_chart=charts)
-    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative_post_norm_no_sd_ss", display_chart=charts)
+    positive_sig_comp = principal_component_analysis(positive_matrix, name="positive", display_chart=charts)
+    negative_sig_comp = principal_component_analysis(negative_matrix, name="negative", display_chart=charts)
 
     if verbose:
         print("Completed principal component analysis on each sentiment lexicon.")
@@ -669,7 +679,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
             validate_debiasing(word_vectors, debiasing_model, dsv)
 
         # Save the weights as they take a while to generate!
-        filename = f"./weights/{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
+        filename = f"{datetime.now().isoformat().replace(':', '-')}_weights_a{alpha}_i{iterations}_s{seed}.txt"
         np.savetxt(filename, debiasing_model.lowest)
     else:
         # Load using the specified file
@@ -708,10 +718,12 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
     # Load the SemEval-2018 training data set
     # We don't actually need the test data set unless we are validating later
-    training_unlabelled, training_labels = valence_csv_to_vectorised_df(word_vectors, "./SemReady/valence_training_set.csv")
+    training_unlabelled, training_labels = valence_csv_to_vectorised_df(word_vectors, "valence_training_set.csv")
 
     if verbose:
         print("Loaded valence training data set")
+        print("Showing overview stats:")
+        print(training_labels.describe())
 
     print("Training SVR valence model")
 
@@ -722,7 +734,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
     print("Trained SVR valence model")
 
     if validations:
-        test_unlabelled, test_labels = valence_csv_to_vectorised_df(word_vectors, "./SemReady/valence_test_set.csv")
+        test_unlabelled, test_labels = valence_csv_to_vectorised_df(word_vectors, "valence_test_set.csv")
         print("Predicting using test set")
 
         valence_predictions = model.predict(test_unlabelled)
@@ -744,7 +756,7 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
 
     # Load the sentence vectors and their corresponding information
     # i.e. emotion, template, and gender
-    EEC_df, noun_phrase_index, template_cats, ew_cats = load_gender_EEC_df("./Equity-Evaluation-Corpus/Equity-Evaluation-Corpus.csv")
+    EEC_df, noun_phrase_index, template_cats, ew_cats = load_gender_EEC_df("Equity-Evaluation-Corpus.csv")
     EEC_sentence_vectors, EEC_other_features = vectorise_df_sentences(word_vectors, EEC_df)
     # Predict the valence of each sentence in the EEC
     EEC_sentence_valences = model.predict(EEC_sentence_vectors)
@@ -814,9 +826,73 @@ def main(charts=False, validations=False, verbose=False, seed=None, iterations=1
         print("Mean sentence delta for F up:", sum(m_down_f_up) / len(m_down_f_up))
         print("Sentence delta variance for F up:", np.var(m_down_f_up))
 
+"""
+Checks that files exist for the operation of this project
+Also converts data sets to the correct format
+"""
+def prep_data_sources(weights_location):
+    required_files = [
+        "2018-Valence-reg-En-test-gold.txt",
+        "2018-Valence-reg-En-train.txt",
+        "negative-words.txt",
+        "positive-words.txt",
+        "Equity-Evaluation-Corpus.csv"
+    ]
 
-w_l_glove = "./weights/2021-04-06T12-23-53.366657_BEST_weights_a0.5_i40000_s1828.txt"
-w_l_gn = "./weights/2021-04-05T21-11-28.176502_BEST_weights_a0.5_i40000_s1828.txt"
-main(charts=False, validations=True, verbose=True, seed=1828, iterations=40000, alpha=0.5, weights_location=None, debias=True)
-# valence_data_to_csv("./SemEval-2018/2018-Valence-reg-En-test-gold.txt", "./SemReady/valence_test_set.csv")
-#load_gender_EEC_df("./Equity-Evaluation-Corpus/Equity-Evaluation-Corpus.csv")
+    if weights_location is not None:
+        required_files.append(weights_location)
+
+    # Check files needed exist
+    for file in required_files:
+        if not os.path.isfile(file):
+            print(f"Project requires {file} to run!")
+            return
+
+    # Do some file conversions if they do not exist
+    if not os.path.isfile("valence_training_set.csv"):
+        print("valence_training_set.csv not found. Converting the text file.")
+        valence_data_to_csv("2018-Valence-reg-En-train.txt", "valence_training_set.csv")
+
+    if not os.path.isfile("valence_test_set.csv"):
+        print("valence_test_set.csv not found. Converting the text file.")
+        valence_data_to_csv("2018-Valence-reg-En-test-gold.txt", "valence_test_set.csv")
+
+    # Download via gensim
+    if not os.path.isfile("pretrained-word2vec-keyedvectors.kv"):
+        print("pretrained-word2vec-keyedvectors.kv not found. Downloading and saving via gensim.")
+        print("This is a large ~1.8 GB file so it might take a few minutes.")
+        downloaded_wvs = api.load("word2vec-google-news-300")
+        downloaded_wvs.save("pretrained-word2vec-keyedvectors.kv")
+
+    print("All file validations successful")
+
+# Set to true to generate charts and scatter plots such as the PCA bar chart
+# as well as variance plots of sentence deltas and the scatter valence graph
+display_charts = True
+# Shows the validation checks throughout the project such as validating that the dsv
+# is a suitable concept and showing the effects of debiasing on word similarity
+display_validation_checks = True
+# Define the seed to use for the random generator. It was useful for getting reproducible
+# results when developing this!
+random_seed = 1828
+# The number of iterations for the debiaser
+iterations = 40000
+# Hyperparameter for the debiaser
+alpha = 0.5
+# Instead of running the debiaser everytime you can load a pre-trained weights array
+# I have included one in the submission
+# weights_file_location = "2021-04-08T12-37-34.168980_weights_a0.5_i40000_s1828.txt"
+# Uncomment out the line above and comment out the line below to use it!
+weights_file_location = None
+# Determines whether or not to use the debiaser on the word embeddings
+# useful for comparing before and after debiasing
+apply_debiaser = False
+# Prints additional information about what is happening
+verbose = True
+
+# This function will check that all of the required files are present
+# it will also download the Google News Corpus and clean the valence data sets
+prep_data_sources(weights_file_location)
+
+# This initialises everything in the project
+main(charts=display_charts, validations=display_validation_checks, verbose=verbose, seed=random_seed, iterations=iterations, alpha=alpha, weights_location=weights_file_location, debias=apply_debiaser)
